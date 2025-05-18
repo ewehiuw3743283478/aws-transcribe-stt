@@ -28,7 +28,7 @@ const TRANSLATE_TARGET_LANGUAGE = "zh"; // Chinese for Translate
 // IMPORTANT: Sample rate MUST match the sample rate of the audio chunks received from content.js
 // If content.js captures at 44100Hz and doesn't resample, you must set this to 44100.
 // If content.js resamples to 16000Hz, set this to 16000.
-const AUDIO_CHUNK_SAMPLE_RATE = 16000; // Assuming content.js resamples or captures at this rate
+const AUDIO_CHUNK_SAMPLE_RATE = 16000; // Assuming content.js resamples or captures at this rate (Task 2.4)
 const TRANSCRIBE_SERVICE_NAME = 'transcribe'; // AWS service name for Transcribe
 
 // --- Helper: Get AWS Credentials (Same as before) ---
@@ -51,7 +51,7 @@ async function getAwsCredentials() {
   });
 }
 
-// --- AWS Transcribe Real-time WebSocket Logic ---
+// --- AWS Transcribe Real-time WebSocket Logic (Task 1.2, 1.3, 1.4) ---
 async function startTranscribeWebSocket(config) {
   console.log("Attempting to connect to AWS Transcribe...");
 
@@ -76,7 +76,7 @@ async function startTranscribeWebSocket(config) {
   const request = new HttpRequest({
       method: 'GET', // WebSocket handshake starts with a GET request
       hostname: url.hostname,
-      path: url.pathname,
+      path: '/stream', // <--- Correct path for Transcribe streaming WebSocket (Fixes 404)
       query: { // Query parameters required by Transcribe streaming API
           'language-code': TRANSCRIBE_LANGUAGE_CODE,
           'media-encoding': 'pcm', // Must match the format of the audio chunks sent (16-bit PCM)
@@ -121,15 +121,14 @@ async function startTranscribeWebSocket(config) {
 
 
   // Event Stream Marshaller (Task 1.3/1.4)
-  // const eventMarshaller = new EventStreamMarshaller(toUtf8, fromUtf8); // Requires @aws-sdk/eventstream-marshaller, util-utf8-node
+  const eventMarshaller = new EventStreamMarshaller(toUtf8, fromUtf8); // Requires @aws-sdk/eventstream-marshaller, util-utf8-node
 
   transcribeWebSocket.onopen = (event) => {
     console.log("Transcribe WebSocket opened successfully.");
     // Send initial settings message (required by Transcribe event stream protocol)
     // This message format is specific to Transcribe event stream.
     // It confirms configuration like language, encoding, sample rate.
-    // Example implementation (Task 1.3/1.4, requires eventstream-marshaller):
-    /*
+    // Implementation (Task 1.3/1.4):
     try {
         const greetingMessage = {
             headers: {
@@ -138,8 +137,8 @@ async function startTranscribeWebSocket(config) {
             },
             body: JSON.stringify({
                 LanguageCode: TRANSCRIBE_LANGUAGE_CODE,
-                MediaEncoding: 'pcm', // Must match audio format
-                SampleRate: AUDIO_CHUNK_SAMPLE_RATE, // Must match audio sample rate
+                MediaEncoding: 'pcm', // Must match audio format sent from content.js
+                SampleRate: AUDIO_CHUNK_SAMPLE_RATE, // Must match audio sample rate sent from content.js
                 // Add other configuration options here if needed
             }),
         };
@@ -149,9 +148,11 @@ async function startTranscribeWebSocket(config) {
     } catch (error) {
         console.error("Error sending Transcribe configuration message:", error);
         // Handle error, maybe close socket?
+        updateSubtitlesInContentScript("", `[STT配置出错: ${error.message}]`);
+        stopProcessing();
     }
-    */
-     console.log("WebSocket opened. Ready to receive audio data (and send config if implemented).");
+
+     console.log("WebSocket opened. Ready to receive audio data.");
      // Inform content script that AWS is ready to receive audio (optional but good practice)
      if (currentTabId) {
          chrome.tabs.sendMessage(currentTabId, { action: "awsReady" }).catch(e => console.error("Error sending awsReady to tab:", e));
@@ -162,8 +163,7 @@ async function startTranscribeWebSocket(config) {
     // *** Parse the incoming event stream message from Transcribe (Task 1.4) ***
     // event.data will be a binary Blob or ArrayBuffer.
     // You need to unmarshall it using EventStreamMarshaller.
-    // Example implementation (Task 1.4, requires eventstream-marshaller, util-utf8-node):
-    /*
+    // Implementation (Task 1.4):
     try {
         const blob = event.data;
         // Read blob as ArrayBuffer asynchronously
@@ -211,6 +211,8 @@ async function startTranscribeWebSocket(config) {
                  console.log("Received unknown WebSocket message type:", messageType, eventType);
             }
         };
+        // Start reading the blob as ArrayBuffer
+        // Need to handle potential errors during reading? FileReader.onerror?
         reader.readAsArrayBuffer(blob);
 
     } catch (error) {
@@ -218,22 +220,6 @@ async function startTranscribeWebSocket(config) {
         updateSubtitlesInContentScript("", `[处理STT结果出错: ${error.message}]`);
         stopProcessing(); // Stop on error
     }
-    */
-    // --- Placeholder: Simulate receiving a final transcript (Remove this when Task 1.4 is implemented) ---
-    console.log("Received WebSocket message (placeholder). Simulating transcript result.");
-    // In a real scenario, parse event.data and call translateText(parsedJapaneseText);
-    // For now, let's simulate receiving text and triggering translation after a short delay.
-    // This simulation replaces the actual message parsing logic above.
-    if (!transcribeWebSocket._simulating) { // Prevent multiple timeouts from one message
-        transcribeWebSocket._simulating = true;
-         setTimeout(() => {
-            const simulatedJapaneseText = "こんにちは、これはタブキャプチャからのテストです。"; // Example Japanese text
-            console.log("Simulated Final Japanese:", simulatedJapaneseText);
-            translateText(simulatedJapaneseText); // Call translate (Task 1.5 placeholder)
-            delete transcribeWebSocket._simulating;
-         }, 500); // Simulate processing delay
-    }
-    // --- End Placeholder Simulation ---
   };
 
    transcribeWebSocket.onerror = (event) => {
@@ -288,35 +274,32 @@ function stopTranscribeWebSocket() {
 
 // Function to send audio chunks (called by content script)
 // The chunk should be an ArrayBuffer containing raw audio data (Int16Array buffer)
-// This is Task 1.3. Event Stream marshalling needs to be implemented here.
+// This is Task 1.3. Event Stream marshalling is implemented here.
 function sendAudioChunkToTranscribe(chunk) {
     if (transcribeWebSocket && transcribeWebSocket.readyState === WebSocket.OPEN) {
         // *** Send the audio chunk as a binary message (Task 1.3) ***
         // This involves creating an EventStream message of type 'AudioEvent'
         // with the chunk as the body, and marshalling it into a binary frame.
         // Requires eventstream-marshaller.
-        /*
         try {
+            // The chunk is an ArrayBuffer from content.js. Need to wrap it for marshaller.
+            // Transcribe expects raw bytes, so Uint8Array is appropriate.
             const audioEventMessage = {
                 headers: {
                     ':message-type': { type: 'string', value: 'event' },
                     ':event-type': { type: 'string', value: 'AudioEvent' },
                 },
-                body: new Uint8Array(chunk), // Audio data as Uint8Array or Buffer
+                body: new Uint8Array(chunk), // Audio data as Uint8Array
             };
             const binaryMessage = eventMarshaller.marshall(audioEventMessage);
             transcribeWebSocket.send(binaryMessage);
-            // console.log("Sent audio chunk. Size:", chunk.byteLength);
+            // console.log("Sent audio chunk. Size:", chunk.byteLength); // Can be noisy
         } catch (error) {
             console.error("Error marshalling/sending audio chunk:", error);
             // Decide how to handle send errors - maybe stop or log
             updateSubtitlesInContentScript("", `[发送音频出错: ${error.message}]`);
             // stopProcessing(); // Optional: stop on send error
         }
-        */
-        // Placeholder: Just log that a chunk was received but not sent (Remove this when Task 1.3 is implemented)
-        // console.log("Received and would send audio chunk (processing disabled in example). Size:", chunk.byteLength);
-        // In a real scenario, uncomment the try/catch block above.
     } else {
         // console.warn("WebSocket not open, cannot send audio chunk.");
         // Handle case where WS is not ready - buffer chunks? Drop them?
@@ -343,7 +326,6 @@ async function translateText(japaneseText) {
 
   try {
     // *** Call Translate API (Task 1.5, Requires @aws-sdk/client-translate) ***
-    /*
     const command = new TranslateTextCommand({
       Text: japaneseText,
       SourceLanguageCode: TRANSLATE_SOURCE_LANGUAGE,
@@ -351,15 +333,6 @@ async function translateText(japaneseText) {
     });
     const response = await translateClient.send(command);
     const chineseText = response.TranslatedText;
-    */
-
-    // --- Placeholder: Simulate translation delay and result (Remove this when Task 1.5 is implemented) ---
-    const chineseText = await new Promise(resolve => {
-        setTimeout(() => {
-            resolve(`[翻译: ${japaneseText}]`); // Replace with actual translation result from AWS
-        }, 200); // Simulate network latency for translation
-    });
-    // --- End Placeholder ---
 
     console.log("Translated:", chineseText);
 
@@ -409,8 +382,17 @@ async function startProcessing() {
     console.log("AWS Config loaded successfully.");
 
     // 2. Initialize AWS Translate Client (Task 1.5)
-    // translateClient = new TranslateClient({ ... }); // Requires @aws-sdk/client-translate
-    console.warn("TranslateClient initialization placeholder."); // Placeholder
+    // This should be initialized once when starting.
+    translateClient = new TranslateClient({ // Requires @aws-sdk/client-translate
+       region: awsConfig.region,
+       credentials: {
+           accessKeyId: awsConfig.accessKeyId,
+           secretAccessKey: awsConfig.secretAccessKey,
+           // sessionToken: awsConfig.sessionToken, // If using temporary credentials
+       }
+    });
+    console.log("TranslateClient initialized."); // Changed from warn to log
+
 
     // 3. Start AWS Transcribe WebSocket connection (Now includes SigV4)
     // This is async and needs to handle connection lifecycle.
@@ -509,7 +491,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Received audio data from content script (from tabCapture processing)
     // Ensure message comes from the tab we expect
     if (sender.tab && sender.tab.id === currentTabId && request.chunk) {
-        // console.log("Received audio chunk from content script. Size:", request.chunk.byteLength);
+        // console.log("Received audio chunk from content script. Size:", request.chunk.byteLength); // Can be noisy
         // Send the audio chunk to the Transcribe WebSocket (Task 1.3)
         sendAudioChunkToTranscribe(request.chunk); // Call the function to send to WS
         sendResponse({ success: true }); // Acknowledge receipt
@@ -531,7 +513,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log("Content script reports audio processing started.");
       sendResponse({ success: true });
   }
-  // Add other message handlers if needed 123
+  // Add other message handlers if needed
 });
 
 // --- Initial state check (optional) ---
