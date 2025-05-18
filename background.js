@@ -531,7 +531,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log("Content script reports audio processing started.");
       sendResponse({ success: true });
   }
-  // Add other message handlers if needed
+  // Add other message handlers if needed 123
 });
 
 // --- Initial state check (optional) ---
