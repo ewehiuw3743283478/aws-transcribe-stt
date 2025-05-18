@@ -76,7 +76,7 @@ async function startTranscribeWebSocket(config) {
   const request = new HttpRequest({
       method: 'GET', // WebSocket handshake starts with a GET request
       hostname: url.hostname,
-      path: '/stream', // <--- Correct path for Transcribe streaming WebSocket (Fixes 404)
+      path: '/stream-transcription-websocket', // <--- Correct path based on AWS format
       query: { // Query parameters required by Transcribe streaming API
           'language-code': TRANSCRIBE_LANGUAGE_CODE,
           'media-encoding': 'pcm', // Must match the format of the audio chunks sent (16-bit PCM)
@@ -88,7 +88,7 @@ async function startTranscribeWebSocket(config) {
           // 'vocabulary-name': 'YourVocabularyName',
       },
       protocol: url.protocol,
-      // Add Host header explicitly - sometimes needed for signing robustness
+      // Add Host header explicitly - required for signing robustness
       headers: { Host: url.hostname },
   });
 
@@ -103,7 +103,6 @@ async function startTranscribeWebSocket(config) {
   const params = new URLSearchParams(signedRequest.query); // Start with original query params
   Object.entries(signedRequest.headers).forEach(([key, value]) => {
        // Add relevant signed headers as query parameters.
-       // SigV4 requires Authorization, x-amz-date, and potentially x-amz-security-token.
        // Use lowercase keys from signedRequest.headers as they are canonical.
        if (key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-amz-date' || key.toLowerCase() === 'x-amz-security-token' || key.toLowerCase() === 'host') { // Include host header
            params.append(key, value);
