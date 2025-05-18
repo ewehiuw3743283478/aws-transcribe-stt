@@ -1,114 +1,134 @@
-/* popup.css */
+// popup.js
+// Handles the logic for the extension popup window.
 
-/* Define Material You inspired color palette using CSS variables */
-:root {
-  /* Example tones, you can adjust these */
-  --md-primary: #6750a4; /* Primary purple */
-  --md-on-primary: #ffffff; /* Text color on primary */
-  --md-secondary: #625b71; /* Secondary grey-purple */
-  --md-on-secondary: #ffffff; /* Text color on secondary */
-  --md-surface: #fffbfe; /* Light background surface */
-  --md-on-surface: #1c1b1f; /* Dark text on light surface */
-  --md-error: #b3261e; /* Error red */
-  --md-on-error: #ffffff; /* Text color on error */
-  --md-success: #4CAF50; /* Standard success green */
-  --md-warning: #FF9800; /* Standard warning orange */
-}
+document.addEventListener('DOMContentLoaded', function() {
+  console.log("Popup script loaded.");
 
-body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  padding: 0;
-  margin: 0;
-  min-width: 250px; /* Give the popup a reasonable minimum width */
-  background-color: var(--md-surface);
-  color: var(--md-on-surface);
-  /* Prevent text selection in popup */
-  user-select: none;
-}
+  // Get references to the HTML elements
+  const startButton = document.getElementById('startBtn');
+  const stopButton = document.getElementById('stopBtn');
+  const statusDiv = document.getElementById('status');
 
-.popup-container {
-  padding: 16px; /* Consistent padding around content */
-  display: flex;
-  flex-direction: column; /* Stack elements vertically */
-  gap: 12px; /* Space between child elements */
-}
+  // Function to update button states (disabled/enabled)
+  // based on whether the process is currently running.
+  function updateButtonState(isRunning) {
+    startButton.disabled = isRunning;
+    stopButton.disabled = !isRunning;
+    console.log(`Button state updated: Start disabled=${isRunning}, Stop disabled=${!isRunning}`);
+  }
 
-.popup-title {
-  font-size: 1.2em;
-  font-weight: 500; /* Medium weight */
-  margin: 0 0 8px 0; /* Margin below title */
-  text-align: center;
-  color: var(--md-on-surface);
-}
+  // Function to update status text and apply state classes for styling.
+  // stateClass can be 'running', 'error', or empty for default/idle.
+  function updateStatus(text, stateClass = '') {
+      // Always prefix with "Status: " for clarity in the UI
+      statusDiv.textContent = `Status: ${text}`;
+      // Reset classes first to remove any previous state classes
+      statusDiv.className = 'status-area'; // Resets to the base class defined in popup.css
+      // Add the new state class if provided
+      if (stateClass) {
+          statusDiv.classList.add(stateClass);
+      }
+      console.log(`Status updated: "${text}" with class "${stateClass}"`);
+  }
 
-.action-button {
-  display: block; /* Make buttons take full width */
-  width: 100%;
-  padding: 10px 16px; /* Vertical and horizontal padding */
-  margin: 0; /* Gap handled by container */
-  border: none;
-  border-radius: 20px; /* Significant rounding for M3 feel */
-  cursor: pointer;
-  font-size: 1em;
-  font-weight: 500;
-  text-align: center;
-  transition: background-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-  /* Subtle elevation shadow */
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.1);
-}
+  // --- Initial State Check ---
+  // When the popup opens, ask the background script for the current running status
+  console.log("Requesting initial status from background script...");
+  chrome.runtime.sendMessage({ action: "getStatus" }, function(response) {
+    // Check if there was an error sending the message (e.g., background script not running)
+    if (chrome.runtime.lastError) {
+        console.error("Error getting initial status from background:", chrome.runtime.lastError.message);
+        // Assume idle state and show an error message in the status
+        updateButtonState(false);
+        updateStatus(`Error: ${chrome.runtime.lastError.message}`, 'error');
+        return;
+    }
 
-.action-button:hover {
-   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15), 0 2px 3px rgba(0, 0, 0, 0.1); /* Increased shadow on hover */
-}
+    // Update the UI based on the received status
+    const isRunning = response && response.isRunning; // Ensure response is valid
+    updateButtonState(isRunning);
+    updateStatus(isRunning ? "Running" : "Idle", isRunning ? 'running' : '');
+    console.log(`Initial status received: isRunning = ${isRunning}`);
+  });
 
-.action-button:active {
-   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.15); /* Inset shadow for pressed state */
-   opacity: 0.95; /* Slightly reduce opacity when pressed */
-}
+  // --- Event Listeners ---
 
+  // Start button click handler
+  startButton.addEventListener('click', function() {
+    console.log("Start button clicked.");
+    // Immediately update UI to reflect pending action
+    updateButtonState(true); // Disable Start, Enable Stop
+    updateStatus("Starting..."); // Indicate that the process is starting
+     // Clear previous error message/link if any by resetting innerHTML
+    statusDiv.innerHTML = statusDiv.textContent;
 
-.action-button.primary {
-  background-color: var(--md-primary);
-  color: var(--md-on-primary);
-}
+    // Send a message to the background script to start the process
+    chrome.runtime.sendMessage({ action: "start" }, function(response) {
+      // Check for errors sending the message
+      if (chrome.runtime.lastError) {
+          console.error("Error sending start message to background:", chrome.runtime.lastError.message);
+          // If message send fails, revert buttons and show error
+          updateButtonState(false);
+          updateStatus(`Error: ${chrome.runtime.lastError.message}`, 'error');
+          return;
+      }
 
-.action-button.secondary {
-  background-color: var(--md-secondary);
-  color: var(--md-on-secondary);
-}
+      // Process the response from the background script
+      if (response && response.success) {
+        // Process started successfully (background script confirms)
+        // updateButtonState(true); // Button state is already set above
+        updateStatus("Running", 'running'); // Set final success status
+        console.log("Start process confirmed by background script.");
+      } else {
+        // Process failed to start (background script reported an error)
+        updateButtonState(false); // Revert buttons to idle state
+        let errorMessage = response && response.error ? response.error : "Unknown error";
+        updateStatus(`Error - ${errorMessage}`, 'error'); // Set error status
+        console.error("Background script failed to start:", errorMessage);
 
-.action-button:disabled {
-  opacity: 0.5; /* Dim disabled buttons */
-  cursor: not-allowed;
-  box-shadow: none; /* Disabled buttons typically have no shadow */
-}
+        // Special case: If credentials error, add a link to the options page
+        if (errorMessage.includes("Credentials not configured")) {
+             // Use innerHTML to add the link, preserving existing text
+             statusDiv.innerHTML = `Status: Error - ${errorMessage}<br><a href="${chrome.runtime.getURL('options.html')}" target="_blank">Configure AWS Credentials</a>`;
+        }
+      }
+    });
+  });
 
-.status-area {
-  margin-top: 8px; /* Space above status */
-  text-align: center;
-  font-size: 0.9em;
-  color: var(--md-on-surface); /* Default status color */
-  min-height: 1.2em; /* Give it some height even when empty */
-  word-break: break-word; /* Prevent long text from overflowing */
-}
+  // Stop button click handler
+  stopButton.addEventListener('click', function() {
+    console.log("Stop button clicked.");
+    // Immediately update UI to reflect pending action
+    updateButtonState(false); // Disable Stop, Enable Start
+    updateStatus("Stopping..."); // Indicate that the process is stopping
+     // Clear previous error message/link if any
+    statusDiv.innerHTML = statusDiv.textContent;
 
-/* Status colors handled by JS adding/removing classes */
-.status-area.running {
-    color: var(--md-success);
-    font-weight: bold;
-}
+    // Send a message to the background script to stop the process
+    chrome.runtime.sendMessage({ action: "stop" }, function(response) {
+       // Check for errors sending the message
+       if (chrome.runtime.lastError) {
+           console.error("Error sending stop message to background:", chrome.runtime.lastError.message);
+           // If message send fails, status is uncertain, but buttons should be idle
+           updateButtonState(false);
+           updateStatus(`Error: ${chrome.runtime.lastError.message}`, 'error');
+           return;
+       }
 
-.status-area.error {
-    color: var(--md-error);
-    font-weight: bold;
-}
-
-.status-area a {
-    color: var(--md-primary); /* Link color matching primary button */
-    text-decoration: none;
-    font-weight: normal; /* Don't make links bold if parent is bold */
-}
-
-.status-area a:hover {
-    text-decoration: underline;
-}
+       // Process the response from the background script
+       if (response && response.success) {
+         // Process stopped successfully (background script confirms)
+         // updateButtonState(false); // Button state is already set above
+         updateStatus("Idle"); // Set final success status (no special class for idle)
+         console.log("Stop process confirmed by background script.");
+       } else {
+         // Process failed to stop (less common, but handle it)
+         // Stay in idle button state, but show an error message
+         updateButtonState(false); // Ensure buttons are in idle state
+         let errorMessage = response && response.error ? response.error : "Unknown error during stop";
+         updateStatus(`Error stopping: ${errorMessage}`, 'error'); // Set error status
+         console.error("Background script failed to stop:", errorMessage);
+       }
+    });
+  });
+});

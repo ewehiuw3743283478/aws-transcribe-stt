@@ -20,21 +20,21 @@
     "open_in_tab": true
   },
   "permissions": [
-    "storage",          
-    "activeTab",        
-    "scripting"            
+    "storage",
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
-    "*://*/*"           
+    "*://*/*"
   ],
   "background": {
-    "service_worker": "background.js" 
+    "service_worker": "dist/background.bundle.js"
   },
   "content_scripts": [
     {
-      "matches": ["*://*/*"], 
-      "js": ["content.js"],   
-      "css": ["subtitle.css"] 
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "css": ["subtitle.css"]
     }
   ]
 }
