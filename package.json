@@ -1,4 +1,11 @@
 {
+  "name": "chrome-aws-stt-translate",
+  "version": "1.0.0",
+  "description": "",
+  "main": "background.js",
+  "scripts": { 
+    "build": "webpack --config webpack.config.js" 
+  },
   "devDependencies": {
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.1",
