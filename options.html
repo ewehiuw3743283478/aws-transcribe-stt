@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AWS STT Translate Options</title>
+  <!-- Link to the CSS file for styling -->
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="options-container">
+    <h1 class="options-title">AWS Configuration</h1>
+
+    <!-- Warning Area -->
+    <div class="warning-box">
+      <h2 class="warning-title">Security Warning</h2>
+      <p class="warning-text">Storing AWS credentials directly in a browser extension's storage is **NOT secure** for production environments. This is for demonstration purposes only. A secure solution requires a backend service to handle AWS interactions.</p>
+    </div>
+
+    <div class="form-group">
+        <label for="awsAccessKeyId" class="form-label">AWS Access Key ID:</label>
+        <input type="text" id="awsAccessKeyId" class="input-field" placeholder="Enter your AWS Access Key ID">
+    </div>
+
+    <div class="form-group">
+        <label for="awsSecretAccessKey" class="form-label">AWS Secret Access Key:</label>
+        <input type="text" id="awsSecretAccessKey" class="input-field" placeholder="Enter your AWS Secret Access Key">
+    </div>
+
+    <div class="form-group">
+        <label for="awsRegion" class="form-label">AWS Region:</label>
+        <input type="text" id="awsRegion" class="input-field" value="ap-northeast-1" placeholder="e.g., us-east-1, ap-northeast-1"> <!-- Example: Tokyo region -->
+    </div>
+
+    <!-- Save Button - Reusing action-button classes for consistency with popup -->
+    <button id="saveButton" class="action-button primary">
+      Save Credentials
+    </button>
+
+    <!-- Status Area -->
+    <div id="status" class="status-area">
+      Status: Idle
+    </div>
+  </div>
+
+  <!-- Link to the JavaScript file for logic -->
+  <script src="options.js"></script>
+</body>
+</html>

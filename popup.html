@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STT Translate</title>
+  <!-- Link to the CSS file for styling -->
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <h1 class="popup-title">Real-time Translator</h1>
+
+    <!-- Start Button -->
+    <button id="startBtn" class="action-button primary">
+      Start STT + Translate
+    </button>
+
+    <!-- Stop Button -->
+    <button id="stopBtn" class="action-button secondary" disabled>
+      Stop
+    </button>
+
+    <!-- Status Area -->
+    <div id="status" class="status-area">
+      Status: Idle
+    </div>
+  </div>
+
+  <!-- Link to the JavaScript file for logic -->
+  <script src="popup.js"></script>
+</body>
+</html>
