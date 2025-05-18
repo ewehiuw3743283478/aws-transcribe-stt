@@ -88,7 +88,8 @@ async function startTranscribeWebSocket(config) {
           // 'vocabulary-name': 'YourVocabularyName',
       },
       protocol: url.protocol,
-      // headers: { Host: url.hostname }, // Host header is usually added by buildHttpRequest, but SigV4 might need it explicitly
+      // Add Host header explicitly - sometimes needed for signing robustness
+      headers: { Host: url.hostname },
   });
 
   // 3. Sign the request
@@ -103,7 +104,8 @@ async function startTranscribeWebSocket(config) {
   Object.entries(signedRequest.headers).forEach(([key, value]) => {
        // Add relevant signed headers as query parameters.
        // SigV4 requires Authorization, x-amz-date, and potentially x-amz-security-token.
-       if (key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-amz-date' || key.toLowerCase() === 'x-amz-security-token') {
+       // Use lowercase keys from signedRequest.headers as they are canonical.
+       if (key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-amz-date' || key.toLowerCase() === 'x-amz-security-token' || key.toLowerCase() === 'host') { // Include host header
            params.append(key, value);
        }
   });
@@ -112,7 +114,9 @@ async function startTranscribeWebSocket(config) {
   const signedUrl = `wss://${signedRequest.hostname}${signedRequest.path}?${params.toString()}`;
 
   console.log("Signed WebSocket URL constructed.");
-  // console.log("Full Signed URL (for debugging):", signedUrl); // Be cautious logging credentials/signed info
+  console.log("Full Signed URL (for debugging):", signedUrl); // Keep this log for debugging 403/404
+  console.log("Signed Headers (for debugging):", signedRequest.headers); // Log headers too
+
 
   // 5. Create the WebSocket instance using the signed URL
   transcribeWebSocket = new WebSocket(signedUrl);

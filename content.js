@@ -23,7 +23,8 @@ var audioStream = null; // The MediaStream object from tabCapture
 // and ideally match the AudioContext's sample rate to avoid resampling complexity.
 // chrome.tabCapture streams often have sample rates around 44100 or 48000 Hz.
 // Resampling logic is NOT included here and is a significant challenge (Task 2.4).
-const TARGET_SAMPLE_RATE = 16000; // AWS Transcribe common rate
+// Changed from 'const' to 'var' to avoid SyntaxError on potential script re-injection
+var TARGET_SAMPLE_RATE = 16000; // AWS Transcribe common rate
 
 // --- Subtitle Display Logic (Same as before) ---
 function createSubtitleElements() {
