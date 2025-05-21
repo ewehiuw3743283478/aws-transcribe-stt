@@ -1,16 +1,14 @@
 // background.js
 
 // --- AWS SDK Imports ---
-// These imports are necessary for SigV4 signing, Event Stream marshalling/unmarshalling,
-// and the Translate Client. Ensure your bundler (Webpack) resolves these correctly.
-import { TranscribeStreamingClient } from "@aws-sdk/client-transcribe"; // Keep for potential type hints or future use
+import { TranscribeStreamingClient } from "@aws-sdk/client-transcribe"; // Used for types, actual client not directly used for WebSocket
 import { TranslateClient, TranslateTextCommand } from "@aws-sdk/client-translate";
 import { SignatureV4 } from "@aws-sdk/signature-v4";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { parseUrl } from "@aws-sdk/url-parser";
-import { HttpRequest } from "@aws-sdk/protocol-http"; // Ensure HttpRequest is imported correctly
+import { HttpRequest } from "@aws-sdk/protocol-http";
 import { EventStreamMarshaller } from "@aws-sdk/eventstream-marshaller";
-import { fromUtf8, toUtf8 } from "@aws-sdk/util-utf8-node"; // Provided by polyfill/bundler
+import { fromUtf8, toUtf8 } from "@aws-sdk/util-utf8-node";
 
 console.log("Background service worker starting...");
 
@@ -18,16 +16,16 @@ console.log("Background service worker starting...");
 let isRunning = false;
 let awsConfig = null;
 let transcribeWebSocket = null;
-let translateClient = null; // AWS Translate Client instance
-let currentTabId = null; // Keep track of the tab where processing is active
-let eventMarshaller = null; // Declare eventMarshaller here to be accessible in start and send functions
+let translateClient = null;
+let currentTabId = null;
+let eventMarshaller = null; // For AWS EventStream messages
 
 // --- Configuration ---
 const TRANSCRIBE_LANGUAGE_CODE = "ja-JP"; // Japanese for STT
-const TRANSLATE_SOURCE_LANGUAGE = "ja"; // Japanese for Translate
-const TRANSLATE_TARGET_LANGUAGE = "zh"; // Chinese for Translate
-const AUDIO_CHUNK_SAMPLE_RATE = 16000;
-const TRANSCRIBE_SERVICE_NAME = 'transcribe';
+const TRANSLATE_SOURCE_LANGUAGE = "ja";   // Japanese for Translate
+const TRANSLATE_TARGET_LANGUAGE = "zh";   // Chinese for Translate
+const AUDIO_CHUNK_SAMPLE_RATE = 16000;    // Sample rate for Transcribe
+const TRANSCRIBE_SERVICE_NAME = 'transcribe'; // Service name for Transcribe SigV4
 
 // --- Helper: Get AWS Credentials ---
 async function getAwsCredentials() {
@@ -60,76 +58,86 @@ async function startTranscribeWebSocket(config) {
     credentials: {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.secretAccessKey,
+        // sessionToken: config.sessionToken, // Include if using temporary credentials
     },
     region: config.region,
     service: TRANSCRIBE_SERVICE_NAME,
-    sha256: Sha256,
+    sha256: Sha256, // Use the class constructor
   });
 
+  // Create the HttpRequest object that will be presigned.
+  // This represents the initial GET request for the WebSocket handshake.
   const requestToSign = new HttpRequest({
       method: 'GET',
       hostname: parsedEndpointUrl.hostname,
-      path: '/stream-transcription-websocket',
-      protocol: parsedEndpointUrl.protocol,
+      path: '/stream-transcription-websocket', // Standard path for Transcribe streaming
+      protocol: parsedEndpointUrl.protocol, // Should be 'wss:'
       headers: {
-          'Host': parsedEndpointUrl.hostname
+          'Host': parsedEndpointUrl.hostname // Crucial for SigV4 signing
       },
-      query: {
+      query: { // Service-specific parameters for Transcribe
           'language-code': TRANSCRIBE_LANGUAGE_CODE,
           'media-encoding': 'pcm',
           'sample-rate': AUDIO_CHUNK_SAMPLE_RATE.toString(),
       }
   });
 
-  // Use signer.presign() for generating presigned URL query parameters
+  // Use signer.presign() to generate the presigned URL components.
+  // This method is designed for creating URLs with authentication in the query string.
+  // It should populate `signedRequest.query` with all necessary `X-Amz-*` parameters.
   const signedRequest = await signer.presign(requestToSign, {
-       expiresIn: 300, // Expires in 5 minutes
+       expiresIn: 300, // URL expires in 5 minutes
+       // signingDate is not explicitly set, SDK uses current time by default
   });
 
+  // Construct the final WebSocket URL from the components of the signedRequest.
+  // signedRequest.query should contain the original query parameters plus all X-Amz-* signature parameters.
   const queryString = new URLSearchParams(signedRequest.query).toString();
   const signedUrl = `wss://${signedRequest.hostname}${signedRequest.path}?${queryString}`;
 
-  console.log("Signed WebSocket URL constructed using presign():");
-  console.log("Full Signed URL (for debugging):", signedUrl);
+  console.log("Signed WebSocket URL constructed using signer.presign():");
+  console.log("Full Signed URL (for debugging - check for X-Amz-Signature, X-Amz-Expires, etc.):", signedUrl);
+  // For deeper debugging, you can inspect the query object:
   // console.log("Signed Request Query Parameters:", signedRequest.query);
-  // console.log("Signed Request Headers:", signedRequest.headers);
-
 
   transcribeWebSocket = new WebSocket(signedUrl);
 
-  // Initialize eventMarshaller here
+  // Initialize the EventStreamMarshaller for encoding/decoding Transcribe messages
   eventMarshaller = new EventStreamMarshaller(toUtf8, fromUtf8);
 
   transcribeWebSocket.onopen = (event) => {
     console.log("Transcribe WebSocket opened successfully.");
+    // Send the initial configuration event required by Transcribe
     try {
         const greetingMessage = {
             headers: {
                 ':message-type': { type: 'string', value: 'event' },
-                ':event-type': { type: 'string', value: 'configuration-event' },
+                ':event-type': { type: 'string', value: 'configuration-event' }, // This was 'AudioEvent' previously, should be 'configuration-event'
             },
-            body: JSON.stringify({
+            body: JSON.stringify({ // Body should be a JSON string for configuration
                 LanguageCode: TRANSCRIBE_LANGUAGE_CODE,
                 MediaEncoding: 'pcm',
                 SampleRate: AUDIO_CHUNK_SAMPLE_RATE,
+                // Add any other session configuration attributes if needed
+                // e.g., "EnablePartialResultsStabilization": true, "PartialResultsStability": "high"
             }),
         };
         const binaryMessage = eventMarshaller.marshall(greetingMessage);
         transcribeWebSocket.send(binaryMessage);
-        console.log("Sent Transcribe configuration message.");
+        console.log("Sent Transcribe configuration event message.");
     } catch (error) {
         console.error("Error sending Transcribe configuration message:", error);
         updateSubtitlesInContentScript("", `[STT配置出错: ${error.message}]`);
-        if (isRunning) stopProcessing(); // Ensure stopProcessing is called if it's running
+        if (isRunning) stopProcessing();
     }
      if (currentTabId) {
-         chrome.tabs.sendMessage(currentTabId, { action: "awsReady" }).catch(e => console.error("Error sending awsReady to tab:", e));
+         chrome.tabs.sendMessage(currentTabId, { action: "awsReady" }).catch(e => console.error("Error sending awsReady to tab:", e.message));
      }
   };
 
-  transcribeWebSocket.onmessage = (event) => {
+  transcribeWebSocket.onmessage = (eventMessage) => { // Renamed 'event' to 'eventMessage' to avoid conflict
     try {
-        const blob = event.data;
+        const blob = eventMessage.data;
         const reader = new FileReader();
         reader.onloadend = () => {
             const arrayBuffer = reader.result;
@@ -137,31 +145,38 @@ async function startTranscribeWebSocket(config) {
                 console.error("eventMarshaller not initialized for onmessage.");
                 return;
             }
-            const message = eventMarshaller.unmarshall(new Uint8Array(arrayBuffer));
-            const messageType = message.headers[':message-type']?.value;
-            const eventType = message.headers[':event-type']?.value;
+            const message = eventMarshaller.unmarshall(new Uint8Array(arrayBuffer)); // AWS SDK Event
+            const messageHeaders = message.headers;
+            const messageBody = message.body; // This is a Uint8Array
 
-            if (messageType === 'event' && eventType === 'transcript-event') {
-                const messageBody = JSON.parse(message.body);
-                const results = messageBody.Transcript?.Results;
+            const messageType = messageHeaders[':message-type']?.value;
+            const eventType = messageHeaders[':event-type']?.value;
+
+            if (messageType === 'event' && eventType === 'TranscriptEvent') { // Corrected eventType
+                const transcriptEvent = JSON.parse(toUtf8(messageBody)); // Convert Uint8Array body to string, then parse JSON
+                const results = transcriptEvent.Transcript?.Results;
                 if (results && results.length > 0) {
                     const result = results[0];
-                    const alternative = result.Alternatives?.[0];
-                    if (alternative && alternative.Transcript && alternative.Transcript.trim().length > 0) {
-                        const transcript = alternative.Transcript;
-                        if (!result.IsPartial) {
+                    if (!result.IsPartial && result.Alternatives && result.Alternatives.length > 0) {
+                        const transcript = result.Alternatives[0].Transcript;
+                        if (transcript && transcript.trim().length > 0) {
                             console.log("Final Japanese:", transcript);
                             translateText(transcript);
                         }
                     }
                 }
             } else if (messageType === 'exception') {
-                 const messageBody = JSON.parse(message.body);
-                 console.error("Transcribe Exception:", messageBody.Message);
-                 updateSubtitlesInContentScript("", `[STT出错: ${messageBody.Message}]`);
+                 const exception = JSON.parse(toUtf8(messageBody));
+                 console.error("Transcribe Exception:", exception.Message || exception.ExceptionType);
+                 updateSubtitlesInContentScript("", `[STT出错: ${exception.Message || exception.ExceptionType}]`);
                  if (isRunning) stopProcessing();
-            } else {
-                 console.log("Received unknown WebSocket message type:", messageType, eventType);
+            } else if (messageType === 'error') { // Handle :error events as well
+                 const error = JSON.parse(toUtf8(messageBody));
+                 console.error("Transcribe Error:", error.Message || error.ErrorCode);
+                 updateSubtitlesInContentScript("", `[STT出错: ${error.Message || error.ErrorCode}]`);
+                 if (isRunning) stopProcessing();
+            }else {
+                 console.log("Received unknown WebSocket message type/event:", messageType, eventType);
             }
         };
         reader.readAsArrayBuffer(blob);
@@ -172,26 +187,27 @@ async function startTranscribeWebSocket(config) {
     }
   };
 
-   transcribeWebSocket.onerror = (event) => {
-    console.error("Transcribe WebSocket error:", event);
-    let detailedError = 'Unknown WebSocket error';
-    if (event && typeof event === 'object' && 'message' in event) {
-        detailedError = event.message;
-    }
-    updateSubtitlesInContentScript("", `[STT连接出错: ${detailedError}]`);
+   transcribeWebSocket.onerror = (wsErrorEvent) => { // Renamed 'event' to 'wsErrorEvent'
+    console.error("Transcribe WebSocket error:", wsErrorEvent);
+    // The native WebSocket ErrorEvent often doesn't have a detailed message.
+    // More details might be in the browser's console when the error occurs.
+    updateSubtitlesInContentScript("", `[STT连接错误]`);
     if (isRunning) stopProcessing();
   };
 
-  transcribeWebSocket.onclose = (event) => {
-    console.log("Transcribe WebSocket closed:", event.code, event.reason);
-    const unexpectedClose = isRunning && event.code !== 1000 && event.code !== 1001;
-    if (unexpectedClose || (isRunning && event.code === 1001)) { // Also treat 'going away' as unexpected if running
-       console.error("WebSocket closed unexpectedly, attempting to stop.");
-       updateSubtitlesInContentScript("", `[STT连接意外关闭: ${event.code}]`);
-       // isRunning will be set to false by stopProcessing, so this check is important
-       if (isRunning) stopProcessing();
+  transcribeWebSocket.onclose = (closeEvent) => { // Renamed 'event' to 'closeEvent'
+    console.log("Transcribe WebSocket closed:", closeEvent.code, closeEvent.reason);
+    const wasUnexpected = isRunning && closeEvent.code !== 1000 && closeEvent.code !== 1001;
+    if (wasUnexpected) {
+       console.error("WebSocket closed unexpectedly.");
+       updateSubtitlesInContentScript("", `[STT连接意外关闭: ${closeEvent.code}]`);
     }
-    transcribeWebSocket = null; // Ensure it's cleared
+    // Ensure cleanup is done if the process was supposed to be running
+    if (isRunning) {
+        stopProcessing(); // This will set isRunning to false and clean up other resources
+    } else {
+        transcribeWebSocket = null; // Ensure it's cleared if stopProcessing wasn't called
+    }
   };
 
   return transcribeWebSocket;
@@ -207,6 +223,7 @@ function stopTranscribeWebSocket() {
   }
 }
 
+// Function to send audio chunks to Transcribe
 function sendAudioChunkToTranscribe(chunk) {
     if (transcribeWebSocket && transcribeWebSocket.readyState === WebSocket.OPEN) {
         if (!eventMarshaller) {
@@ -214,19 +231,24 @@ function sendAudioChunkToTranscribe(chunk) {
             return;
         }
         try {
+            // Construct the AudioEvent message
             const audioEventMessage = {
                 headers: {
                     ':message-type': { type: 'string', value: 'event' },
                     ':event-type': { type: 'string', value: 'AudioEvent' },
+                    // ':content-type': { type: 'string', value: 'application/octet-stream' } // Usually not needed if media-encoding is pcm
                 },
-                body: new Uint8Array(chunk),
+                body: new Uint8Array(chunk), // Raw audio bytes
             };
             const binaryMessage = eventMarshaller.marshall(audioEventMessage);
             transcribeWebSocket.send(binaryMessage);
         } catch (error) {
             console.error("Error marshalling/sending audio chunk:", error);
             updateSubtitlesInContentScript("", `[发送音频出错: ${error.message}]`);
+            // Consider if stopProcessing() should be called here on repeated errors
         }
+    } else {
+        // console.warn("WebSocket not open or not initialized, cannot send audio chunk.");
     }
 }
 
@@ -238,10 +260,10 @@ async function translateText(japaneseText) {
     return;
   }
   if (!japaneseText || japaneseText.trim().length === 0) {
-      console.log("No meaningful text to translate.");
+      // console.log("No meaningful text to translate.");
       return;
   }
-  console.log("Translating:", japaneseText);
+  // console.log("Translating:", japaneseText); // Can be noisy
   try {
     const command = new TranslateTextCommand({
       Text: japaneseText,
@@ -250,7 +272,7 @@ async function translateText(japaneseText) {
     });
     const response = await translateClient.send(command);
     const chineseText = response.TranslatedText;
-    console.log("Translated:", chineseText);
+    // console.log("Translated:", chineseText); // Can be noisy
     updateSubtitlesInContentScript(japaneseText, chineseText);
   } catch (error) {
     console.error("Error translating text:", error);
@@ -265,9 +287,7 @@ function updateSubtitlesInContentScript(japaneseText, chineseText) {
           action: "updateSubtitles",
           japanese: japaneseText,
           chinese: chineseText
-        }).catch(e => console.warn("Error sending updateSubtitles message (tab might be closed):", e.message));
-    } else {
-        // console.warn("No active tab ID to send subtitle update.");
+        }).catch(e => console.warn("Error sending updateSubtitles (tab might be closed):", e.message));
     }
 }
 
@@ -286,8 +306,7 @@ async function startProcessing() {
     }
     currentTabId = tab.id;
 
-    await getAwsCredentials(); // awsConfig is set globally
-    console.log("AWS Config loaded successfully.");
+    await getAwsCredentials();
 
     translateClient = new TranslateClient({
        region: awsConfig.region,
@@ -298,109 +317,125 @@ async function startProcessing() {
     });
     console.log("TranslateClient initialized.");
 
-    await startTranscribeWebSocket(awsConfig); // WebSocket connection initiated
-    console.log("Transcribe WebSocket setup initiated.");
+    // Start WebSocket connection. This is async.
+    await startTranscribeWebSocket(awsConfig);
+    console.log("Transcribe WebSocket setup initiated (connection pending).");
 
-    // Ensure content script is ready
+    // Setup content script
     try {
         await chrome.scripting.executeScript({ target: { tabId: currentTabId }, files: ['content.js']});
         await chrome.scripting.insertCSS({ target: { tabId: currentTabId }, files: ['subtitle.css']});
         await chrome.tabs.sendMessage(currentTabId, { action: "startContentScript" });
-        console.log("Sent startContentScript signal to content script.");
+        console.log("Content script setup signal sent.");
     } catch (scriptError) {
         console.error("Error setting up content script:", scriptError);
-        throw new Error(`Content script setup failed: ${scriptError.message}`);
+        throw new Error(`Content script setup failed: ${scriptError.message}`); // Propagate
     }
     
-    // Tell content script to initiate tab capture
-    // This needs to happen after AWS WebSocket is at least trying to connect,
-    // and ideally after onopen, but for simplicity, we do it here.
-    // The content script will wait for "awsReady" or handle audio buffering if needed.
+    // Signal content script to start audio capture.
+    // The content script should ideally wait for the "awsReady" message before sending chunks,
+    // or buffer them if it starts capturing earlier.
     try {
         await chrome.tabs.sendMessage(currentTabId, { action: "initiateTabCapture" });
         console.log("Sent initiateTabCapture signal to content script.");
     } catch (captureError) {
-        console.error("Error sending initiateTabCapture to content script:", captureError);
-        throw new Error(`Failed to signal tab capture: ${captureError.message}`);
+         console.error("Error sending initiateTabCapture signal:", captureError);
+         throw new Error(`Signaling tab capture failed: ${captureError.message}`); // Propagate
     }
 
     isRunning = true;
-    console.log("Processing started successfully.");
+    console.log("Processing marked as started. Waiting for WebSocket to open and receive audio.");
     return { success: true };
 
   } catch (error) {
     console.error("Failed to start processing:", error);
-    // Ensure cleanup happens if start fails, even if stopProcessing was called internally
-    if (isRunning) stopProcessing(); // Redundant if error came from a function that already calls stopProcessing
-    else { // If stopProcessing wasn't called because isRunning was false during the error
+    // Ensure cleanup, even if some parts succeeded before the error
+    if (isRunning) { // If it was marked as running before error
+        stopProcessing(); // This will handle full cleanup
+    } else { // If it failed before isRunning was set true
         awsConfig = null;
         translateClient = null;
-        if(transcribeWebSocket) stopTranscribeWebSocket(); // Ensure WS is closed
-        if(currentTabId) updateSubtitlesInContentScript("", `[启动严重失败: ${error.message}]`);
-        currentTabId = null;
+        if(transcribeWebSocket) stopTranscribeWebSocket();
+        if(currentTabId) {
+            updateSubtitlesInContentScript("", `[启动失败: ${error.message}]`);
+            // Try to tell content script to stop if it was partially set up
+            chrome.tabs.sendMessage(currentTabId, { action: "stopContentScript" })
+                .catch(e => console.warn("Error sending stop to content script during failed start:", e.message))
+                .finally(() => currentTabId = null);
+        }
     }
-    let userError = (typeof error === 'string') ? error : (error instanceof Error ? error.message : "Unknown error during start.");
+    const userError = (typeof error === 'string') ? error : (error instanceof Error ? error.message : "Unknown error during start.");
     return { success: false, error: userError };
   }
 }
 
 function stopProcessing() {
-  if (!isRunning && !transcribeWebSocket && !currentTabId) { // Check if already effectively stopped
-    console.log("Not running or already cleaned up.");
-    return { success: true, message: "Already stopped or not running." }; // Return success as it's in the desired state
+  if (!isRunning && !transcribeWebSocket && !currentTabId && !awsConfig) {
+    console.log("StopProcessing called but already seems stopped/cleaned.");
+    return { success: true, message: "Already stopped or not running." };
   }
   console.log("Stopping processing...");
 
-  stopTranscribeWebSocket();
+  stopTranscribeWebSocket(); // Clears transcribeWebSocket
 
   if (currentTabId) {
-      chrome.tabs.sendMessage(currentTabId, { action: "stopContentScript" })
-        .catch(e => console.warn("Error sending stopContentScript (tab might be closed):", e.message))
-        .finally(() => {
-            currentTabId = null; // Clear tab ID after attempting to send message
-        });
-      console.log("Sent stop signal to content script (if tab was reachable).");
+      const tabIdToStop = currentTabId; // Local copy
+      currentTabId = null; // Clear immediately to prevent new messages
+      chrome.tabs.sendMessage(tabIdToStop, { action: "stopContentScript" })
+        .catch(e => console.warn("Error sending stopContentScript (tab might be closed):", e.message));
+      console.log("Sent stop signal to content script for tab:", tabIdToStop);
   }
 
   isRunning = false;
   awsConfig = null;
   translateClient = null;
-  eventMarshaller = null; // Clear marshaller
+  eventMarshaller = null;
   console.log("Processing stopped and resources reset.");
   return { success: true };
 }
 
 // --- Message Listener from Popup/Content Script ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("Background received message:", request.action, sender.tab ? `from content script in tab ${sender.tab.id}` : "from popup/other");
+  const fromContentScript = sender.tab && sender.tab.id;
+  console.log(`Background received: ${request.action}`, fromContentScript ? `from content script tab ${sender.tab.id}` : "from popup/other");
 
   if (request.action === "start") {
     startProcessing().then(sendResponse);
     return true; // Indicate async response
   } else if (request.action === "stop") {
     sendResponse(stopProcessing());
+    return false;
   } else if (request.action === "getStatus") {
     sendResponse({ isRunning: isRunning });
+    return false;
   } else if (request.action === "audioChunk") {
-    if (sender.tab && sender.tab.id === currentTabId && request.chunk && isRunning) {
+    // Only process if it's from the current tab and we are running
+    if (fromContentScript && sender.tab.id === currentTabId && request.chunk && isRunning) {
         sendAudioChunkToTranscribe(request.chunk);
-        // Not sending response for audio chunks to reduce overhead unless needed
-        // sendResponse({ success: true });
-    } else {
-         // console.warn("Received audioChunk from unexpected sender, without data, or while not running.");
-         // sendResponse({ success: false, error: "Invalid audioChunk message or state" });
     }
+    // No response needed for audio chunks to reduce overhead
+    return false;
   } else if (request.action === "audioCaptureError") {
-     console.error("Audio capture failed in content script:", request.error);
+     console.error("Audio capture error from content script:", request.error, `Tab: ${sender.tab?.id}`);
      updateSubtitlesInContentScript("", `[音频捕获失败: ${request.error}]`);
-     if (isRunning) stopProcessing();
-     sendResponse({ success: true });
+     if (isRunning) stopProcessing(); // Stop if running
+     sendResponse({ success: true }); // Acknowledge
+     return false;
   } else if (request.action === "audioProcessingStarted") {
-      console.log("Content script reports audio processing started.");
-      sendResponse({ success: true });
+      console.log("Content script audio processing started.", `Tab: ${sender.tab?.id}`);
+      sendResponse({ success: true }); // Acknowledge
+      return false;
   }
-  // Consider returning false explicitly if not handling async response and not sending a response
-  // return false; // if no sendResponse is called and not async
+  // Default to false if not handled or not async
+  return false;
 });
 
 console.log("Background service worker initialized. State: Idle.");
+
+// Cleanup on extension uninstall/disable (though service workers are event-driven)
+chrome.runtime.onSuspend.addListener(() => {
+  console.log("Service worker suspending. Cleaning up if running.");
+  if (isRunning) {
+    stopProcessing();
+  }
+});
