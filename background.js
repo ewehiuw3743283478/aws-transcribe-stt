@@ -104,7 +104,8 @@ async function startTranscribeWebSocket(config) {
   Object.entries(signedRequest.headers).forEach(([key, value]) => {
        // Add relevant signed headers as query parameters.
        // Use lowercase keys from signedRequest.headers as they are canonical.
-       if (key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-amz-date' || key.toLowerCase() === 'x-amz-security-token' || key.toLowerCase() === 'host') { // Include host header
+       // DO NOT include the 'host' header as a query parameter
+       if (key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-amz-date' || key.toLowerCase() === 'x-amz-security-token') {
            params.append(key, value);
        }
   });
